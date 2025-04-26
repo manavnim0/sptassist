@@ -19,3 +19,7 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+-keep class com.pits.sptassist.** { *; }
+-keep class com.oplus.** { *; }  # OnePlus internal classes
+-keep class com.heytap.** { *; }  # OPPO/OnePlus base
+-dontwarn com.oplus.**

