@@ -16,35 +16,29 @@ import okio.ByteString
 import kotlinx.coroutines.*
 import java.util.concurrent.TimeUnit
 import java.util.UUID
+import java.util.concurrent.Executors // Make sure this is imported
 
 class WebSocketService : Service() {
 
+    private val TAG = "WebSocketService"
     private var webSocket: WebSocket? = null
     private val client = OkHttpClient.Builder()
         .readTimeout(0, TimeUnit.MILLISECONDS) // Disable read timeout for WebSockets
         .build()
     private val gson = Gson()
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val cameraExecutor = Executors.newSingleThreadExecutor() // ADDED THIS
 
     // --- Constants and Device ID ---
     companion object {
-        private const val TAG = "WebSocketService"
         private const val NOTIFICATION_CHANNEL_ID = "VMControlChannel"
         private const val NOTIFICATION_ID = 101
 
-        // IMPORTANT: Generate a truly unique ID for each device.
-        // This could be:
-        // 1. A UUID generated once and stored in SharedPreferences.
-        // 2. An ID provided by a user during an enrollment process.
-        // DO NOT use Android ID (deprecated due to privacy concerns).
-        // For this example, let's use a simple placeholder.
-        // In a real app, generate and persist this securely.
         private var DEVICE_ID: String = ""
     }
 
     override fun onCreate() {
         super.onCreate()
-        // Initialize DEVICE_ID securely
         if (DEVICE_ID.isEmpty()) {
             val sharedPrefs = getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
             DEVICE_ID = sharedPrefs.getString("device_unique_id", null) ?: run {
@@ -63,21 +57,26 @@ class WebSocketService : Service() {
         startForeground(NOTIFICATION_ID, notification)
 
         connectWebSocket()
-        return START_STICKY // Service will be restarted by the system if killed (e.g., due to low memory)
+        return START_STICKY
     }
 
     override fun onDestroy() {
         super.onDestroy()
         disconnectWebSocket()
-        serviceScope.cancel() // Cancel all coroutines started by this service
+        serviceScope.cancel()
+        cameraExecutor.shutdown() // SHUTDOWN THE EXECUTOR
         Log.d(TAG, "WebSocketService onDestroy")
     }
 
     override fun onBind(intent: Intent?): IBinder? {
-        return null // This is not a bound service; it runs independently
+        return null
     }
 
-    // --- Notification Channel for Foreground Service ---
+    fun disconnectWebSocket() { // Changed from private fun to fun
+        webSocket?.close(1000, "App closing")
+        webSocket = null
+        Log.d(TAG, "WebSocket disconnected.")
+    }
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
@@ -97,20 +96,20 @@ class WebSocketService : Service() {
         return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setContentTitle("VM Control Active")
             .setContentText("Connected to VM server. Monitoring commands...")
-            .setSmallIcon(R.mipmap.ic_launcher) // Use your app icon
+            .setSmallIcon(R.mipmap.ic_launcher)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
     }
 
-    // --- WebSocket Connection Logic ---
     private fun connectWebSocket() {
-        // Ensure only one connection attempt is active
-        webSocket?.close(1000, "Reconnecting")
-        webSocket = null
+        if (webSocket != null) {
+            Log.d(TAG, "WebSocket already connected or connecting.")
+            return
+        }
 
         // **IMPORTANT: Use wss:// for production with your VM's public IP/Domain and Port**
         // For testing, if you're using HTTP (not recommended for production): ws://your-vm-ip:port
-        val wsUrl = "wss://34.41.54.255:4444/ws?deviceId=$DEVICE_ID"
+        val wsUrl = "wss://your-vm-ip-or-domain:8443/ws?deviceId=$DEVICE_ID"
         // Example: wss://192.168.1.100:8443/ws?deviceId=abc-123
         // Example: wss://myvmserver.com:8443/ws?deviceId=abc-123
 
@@ -123,18 +122,16 @@ class WebSocketService : Service() {
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 Log.d(TAG, "WebSocket opened successfully!")
-                // Send initial handshake or authentication token
                 val handshakeMessage = mapOf(
                     "type" to "auth",
                     "deviceId" to DEVICE_ID,
-                    "token" to "your_auth_token_here_for_vm" // Replace with a real token/secret
+                    "token" to "your_auth_token_here_for_vm"
                 )
                 sendData(gson.toJson(handshakeMessage))
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 Log.d(TAG, "Receiving: $text")
-                // Parse the command and execute
                 serviceScope.launch {
                     handleIncomingCommand(text)
                 }
@@ -142,38 +139,34 @@ class WebSocketService : Service() {
 
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
                 Log.d(TAG, "Receiving binary data: ${bytes.hex()}")
-                // Handle binary messages if needed (e.g., received images)
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
                 Log.d(TAG, "Closing: $code / $reason")
-                webSocket.close(1000, null) // Close gracefully
+                webSocket.close(1000, null)
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 Log.e(TAG, "WebSocket Error: ${t.message}", t)
-                // Implement robust reconnection logic with a delay and exponential backoff
                 serviceScope.launch {
                     Log.d(TAG, "Attempting to reconnect WebSocket in 5 seconds...")
-                    delay(5000) // Wait 5 seconds before attempting to reconnect
+                    delay(5000)
                     connectWebSocket()
                 }
+            }
+
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                Log.d(TAG, "Closed: $code / $reason")
+                this@WebSocketService.webSocket = null
             }
         })
     }
 
-    private fun disconnectWebSocket() {
-        webSocket?.close(1000, "App closing")
-        webSocket = null
-    }
-
-    // --- Sending Data to VM ---
     fun sendData(data: String) {
         webSocket?.send(data)
         Log.d(TAG, "Sent: $data")
     }
 
-    // Send a structured result back to the VM
     fun sendResult(commandId: String, result: Any) {
         val message = mapOf(
             "type" to "result",
@@ -184,12 +177,11 @@ class WebSocketService : Service() {
         sendData(gson.toJson(message))
     }
 
-    // --- Command Handling ---
     private suspend fun handleIncomingCommand(jsonCommand: String) {
         try {
             val command = gson.fromJson(jsonCommand, Map::class.java) as Map<String, String>
             val commandType = command["command"]
-            val commandId = command["commandId"] ?: "unknown" // Unique ID for each command
+            val commandId = command["commandId"] ?: "unknown"
 
             Log.d(TAG, "Executing command: $commandType with ID: $commandId")
 
@@ -200,18 +192,15 @@ class WebSocketService : Service() {
                     val password = command["password"] ?: ""
                     WifiManagerHelper(this).connectToWifi(ssid, password)
                 }
-                "get_location" -> LocationHelper(this).getCurrentLocation()
+                // REMOVE OR COMMENT OUT THIS LINE FOR LOCATION
+                // "get_location" -> LocationHelper(this).getCurrentLocation()
                 "send_sms" -> {
                     val number = command["number"] ?: ""
                     val message = command["message"] ?: ""
                     SmsHelper(this).sendSms(number, message)
                 }
                 "take_photo" -> {
-                    // This is more complex. You might need to start an Activity for result,
-                    // or use a CameraX implementation that can save to a file and then
-                    // send the file's URI/Base64 representation.
-                    // For now, it's a placeholder.
-                    CameraHelper(this).takePhoto() // This will return a dummy result
+                    CameraHelper(this, cameraExecutor).takePhoto()
                 }
                 "get_battery_status" -> BatteryHelper(this).getBatteryStatus()
                 else -> mapOf("status" to "error", "message" to "Unknown command type: $commandType")

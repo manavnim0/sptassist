@@ -7,8 +7,9 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import java.io.File
 import java.util.* // For UUID for dummy filename
+import java.util.concurrent.Executor
 
-class CameraHelper(private val context: Context) {
+class CameraHelper(private val context: Context, private val cameraExecutor: Executor) {
 
     private val TAG = "CameraHelper"
 

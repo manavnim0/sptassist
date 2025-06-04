@@ -1,6 +1,6 @@
 pluginManagement {
     repositories {
-        google {
+        google() { // This 'google' block might have content {} inside. That's fine.
             content {
                 includeGroupByRegex("com\\.android.*")
                 includeGroupByRegex("com\\.google.*")
@@ -14,11 +14,10 @@ pluginManagement {
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
-        google()
-        mavenCentral()
+        google()       // <--- THIS IS CRUCIAL
+        mavenCentral() // <--- THIS IS CRUCIAL
     }
 }
 
 rootProject.name = "SPTASSIST"
 include(":app")
- 
