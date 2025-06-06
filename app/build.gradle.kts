@@ -65,7 +65,7 @@ dependencies {
 
     // Google Play Services for Location (FusedLocationProviderClient)
     implementation("com.google.android.gms:play-services-location:21.0.1")
-
+//    implementation('androidx.lifecycle:lifecycle-service:2.6.1'
     // Existing dependencies from your project:
     implementation("androidx.core:core-ktx:1.10.1")
     implementation("androidx.appcompat:appcompat:1.6.1")

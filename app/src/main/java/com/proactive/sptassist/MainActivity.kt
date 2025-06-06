@@ -6,61 +6,76 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
-import android.widget.Button // Import Button
-import android.widget.TextView
+import android.widget.Button
+import android.widget.TextView // Import TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 
 class MainActivity : AppCompatActivity() {
 
     private val TAG = "MainActivity"
-    private lateinit var statusTextView: TextView
-    private lateinit var toggleConnectionButton: Button // Declare the button
 
-    private var isServiceRunning = false // Track the state of the WebSocketService
+    private lateinit var statusTextView: TextView // Declare TextView
+    private lateinit var toggleConnectionButton: Button // Declare Button
 
+    // Define all permissions your app needs that require runtime requests.
     private val REQUIRED_PERMISSIONS = mutableListOf(
-        Manifest.permission.INTERNET,
-        Manifest.permission.ACCESS_NETWORK_STATE,
-        Manifest.permission.ACCESS_WIFI_STATE,
-        Manifest.permission.CHANGE_WIFI_STATE,
-        Manifest.permission.SEND_SMS,
+        Manifest.permission.ACCESS_FINE_LOCATION,
+        Manifest.permission.ACCESS_COARSE_LOCATION,
         Manifest.permission.CAMERA,
-        Manifest.permission.FOREGROUND_SERVICE
+        Manifest.permission.SEND_SMS,
+        Manifest.permission.READ_SMS,
+        Manifest.permission.ACCESS_WIFI_STATE,
+        Manifest.permission.CHANGE_WIFI_STATE
     ).apply {
+        // Add POST_NOTIFICATIONS permission for Android 13 (API 33) and higher
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             add(Manifest.permission.POST_NOTIFICATIONS)
         }
-        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.Q) {
-            add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
-            add(Manifest.permission.READ_EXTERNAL_STORAGE)
-        }
     }.toTypedArray()
 
-    private val PERMISSION_REQUEST_CODE = 100
+
+    // ActivityResultLauncher for handling multiple permission requests
+    private val requestPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
+            val allPermissionsGranted = permissions.entries.all { it.value }
+            if (allPermissionsGranted) {
+                Log.d(TAG, "All required permissions granted.")
+                updateStatus("Permissions Granted. Starting service...")
+                startWebSocketService()
+            } else {
+                val deniedPermissions = permissions.entries.filter { !it.value }.map { it.key }
+                Log.w(TAG, "Permissions not granted: ${deniedPermissions.joinToString()}")
+                updateStatus("Permissions Denied. Service cannot start.")
+                Toast.makeText(this, "Some permissions were denied. App features might be limited.", Toast.LENGTH_LONG).show()
+            }
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        // Initialize UI elements using their IDs from activity_main.xml
         statusTextView = findViewById(R.id.statusTextView)
-        toggleConnectionButton = findViewById(R.id.toggleConnectionButton) // Initialize the button
+        toggleConnectionButton = findViewById(R.id.toggleConnectionButton)
 
-        // Set initial state of the button and check permissions
-        updateUiForServiceState()
-        checkAndRequestPermissions()
+        // Set initial status and button text
+        updateStatus("App Status: Ready to connect.")
+        toggleConnectionButton.text = "CONNECT"
 
+        // Set OnClickListener for the button
         toggleConnectionButton.setOnClickListener {
-            if (isServiceRunning) {
-                stopWebSocketService()
-            } else {
-                startWebSocketService()
-            }
+            // For simplicity, this example just tries to connect.
+            // In a real app, you'd likely toggle between connect/disconnect state.
+            checkAndRequestPermissions()
         }
     }
 
+    /**
+     * Checks if all required permissions are granted. If not, requests them.
+     */
     private fun checkAndRequestPermissions() {
         val permissionsToRequest = REQUIRED_PERMISSIONS.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
@@ -68,79 +83,54 @@ class MainActivity : AppCompatActivity() {
 
         if (permissionsToRequest.isNotEmpty()) {
             Log.d(TAG, "Requesting permissions: ${permissionsToRequest.joinToString()}")
-            statusTextView.text = "Requesting permissions..."
-            toggleConnectionButton.isEnabled = false // Disable button while requesting
-            ActivityCompat.requestPermissions(this, permissionsToRequest, PERMISSION_REQUEST_CODE)
+            requestPermissionLauncher.launch(permissionsToRequest)
         } else {
             Log.d(TAG, "All required permissions already granted.")
-            statusTextView.text = "All permissions granted. Ready to connect."
-            toggleConnectionButton.isEnabled = true // Enable button if permissions are already granted
+            updateStatus("Permissions already granted. Starting service...")
+            startWebSocketService()
         }
     }
 
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == PERMISSION_REQUEST_CODE) {
-            var allGranted = true
-            val deniedPermissions = mutableListOf<String>()
-
-            for (i in permissions.indices) {
-                if (grantResults[i] != PackageManager.PERMISSION_GRANTED) {
-                    allGranted = false
-                    deniedPermissions.add(permissions[i])
-                }
-            }
-
-            if (allGranted) {
-                Log.d(TAG, "All requested permissions granted by user.")
-                statusTextView.text = "All permissions granted. Ready to connect."
-                toggleConnectionButton.isEnabled = true // Enable button
-            } else {
-                val message = "Permissions not granted: ${deniedPermissions.joinToString()}. Cannot establish WebSocket connection."
-                Log.w(TAG, message)
-                statusTextView.text = message
-                Toast.makeText(this, message, Toast.LENGTH_LONG).show()
-                toggleConnectionButton.isEnabled = false // Keep button disabled if permissions are denied
-            }
-        }
-    }
-
+    /**
+     * Starts the WebSocketService if all necessary permissions are granted.
+     * This ensures the service doesn't crash immediately due to missing permissions.
+     */
     private fun startWebSocketService() {
-        val serviceIntent = Intent(this, WebSocketService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(serviceIntent)
-        } else {
-            startService(serviceIntent)
+        // Verify that ALL of the required permissions are indeed granted before starting the service
+        val areAllPermissionsGranted = REQUIRED_PERMISSIONS.all {
+            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
         }
-        isServiceRunning = true
-        updateUiForServiceState()
-        statusTextView.append("\nWebSocket Service starting...")
-    }
 
-    private fun stopWebSocketService() {
-        val serviceIntent = Intent(this, WebSocketService::class.java)
-        stopService(serviceIntent)
-        isServiceRunning = false
-        updateUiForServiceState()
-        statusTextView.append("\nWebSocket Service stopping...")
-    }
-
-    private fun updateUiForServiceState() {
-        if (isServiceRunning) {
-            toggleConnectionButton.text = "DISCONNECT"
+        if (areAllPermissionsGranted) {
+            val serviceIntent = Intent(this, WebSocketService::class.java)
+            // Using ContextCompat.startForegroundService is good practice for API 26+
+            ContextCompat.startForegroundService(this, serviceIntent)
+            Log.d(TAG, "WebSocketService started successfully.")
+            updateStatus("Service Started. Connecting to VM...")
+            toggleConnectionButton.text = "DISCONNECT" // Update button text
+            Toast.makeText(this, "Service Started!", Toast.LENGTH_SHORT).show()
         } else {
-            toggleConnectionButton.text = "CONNECT"
+            Log.w(TAG, "Cannot start WebSocketService: Not all required runtime permissions were granted.")
+            updateStatus("Service Not Started: Permissions missing.")
+            Toast.makeText(this, "Cannot start service: Please grant all permissions.", Toast.LENGTH_LONG).show()
         }
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
-        Log.d(TAG, "MainActivity onDestroy")
-        // Consider if you want to stop the service when the activity is destroyed.
-        // For a persistent WebSocket, you might not want to stop it here.
-        // If you do want to stop it:
-        // if (isServiceRunning) {
-        //     stopWebSocketService()
-        // }
+    /**
+     * Updates the text of the statusTextView.
+     */
+    private fun updateStatus(status: String) {
+        statusTextView.text = "App Status: $status"
     }
+
+    // You might also want a way to stop the service, e.g., on a second button click
+    // or when the app is destroyed if the service isn't meant to run indefinitely.
+    // For now, I'm keeping it simple, but you could add a stop button logic:
+    // private fun stopWebSocketService() {
+    //     val serviceIntent = Intent(this, WebSocketService::class.java)
+    //     stopService(serviceIntent)
+    //     updateStatus("Service Stopped.")
+    //     toggleConnectionButton.text = "CONNECT"
+    //     Toast.makeText(this, "Service Stopped!", Toast.LENGTH_SHORT).show()
+    // }
 }
